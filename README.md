@@ -1,11 +1,10 @@
 # MPCS-53001-Final-Project
 ```
 ├── sql/
-│   └── schema.sql        
-├── mongodb/
-│   └── init_collections.js
+│   └── schema.sql
+│   └── setup.py      
 ├── scripts/
-│   └── data_generator.py 
+│   └── data_generation.py 
 ├── queries/
 │   └── all_queries.sql   
 └── README.md
