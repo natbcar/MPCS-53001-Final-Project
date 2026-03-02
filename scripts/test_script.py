@@ -6,7 +6,7 @@ import redis
 sql_db = mysql.connector.connect(
     host="localhost",
     user="root",
-    password="1935723Nbc!",
+    password="mypassword",
     database="mpcs53001_final_project"
 )
 sql_cursor = sql_db.cursor()
