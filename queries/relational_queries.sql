@@ -3,7 +3,7 @@ SELECT
     u.user_id,
     u.first_name,
     u.last_name,
-    p.*,
+    p.sku,
     pr.name,
     pr.brand,
     pr.description
@@ -16,7 +16,7 @@ JOIN product pr
     ON p.product_id = pr.product_id
 WHERE u.user_id = 882
     AND e.event_type = "view"
-ORDER BY created_at DESC
+ORDER BY e.created_at DESC
 LIMIT 5
 ;
 
@@ -30,6 +30,7 @@ FROM inventory i
 JOIN product_variant p ON i.sku = p.sku 
 JOIN product pr ON p.product_id = pr.product_id
 WHERE i.qty_available < 5 AND p.status = 'active'
+ORDER BY qty_available DESC
 ;
 
 -- 5. 
@@ -68,8 +69,6 @@ GROUP BY user_id
 SELECT DISTINCT
     c.cart_id,
     d.device_type,
-    ci.cart_item_id,
-    p.price
     COUNT(DISTINCT ci.cart_item_id) item_count,
     SUM(p.price) total_price
 FROM cart c 
@@ -80,6 +79,8 @@ JOIN devices d ON s.device_id = d.device_id
 GROUP BY c.cart_id, d.device_type
 ORDER BY total_price DESC
 ;
+
+
 
 -- 8. Retrieve all orders placed by Sarah, showing order IDs, item details, payment methods, shipping options chosen, and the status of each order.
 
@@ -101,9 +102,14 @@ FROM orders_diff t1
 LEFT JOIN orders_diff t2 ON t1.rn = t2.rn + 1
 ;
 
+
+
 -- 11. Calculate the percentage of carts that did not convert to orders in the past 30 days.
 SELECT
-    COUNT(DISTINCT CASE WHEN status <> "converted" THEN cart_id ELSE NULL END) / COUNT(DISTINCT cart_id) AS pct_abandoned
+    ROUND(
+        100 * COUNT(DISTINCT CASE WHEN status <> "converted" THEN cart_id ELSE NULL END) 
+        / COUNT(DISTINCT cart_id),
+        2) AS pct_abandoned
 FROM cart 
 WHERE created_at BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY) AND CURRENT_DATE
 ;
@@ -116,5 +122,4 @@ SELECT
 FROM users u 
 JOIN orders o ON u.user_id = o.order_id 
 GROUP BY u.user_id 
-ORDER BY days_since_last_order
 ;
