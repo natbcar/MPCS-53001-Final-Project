@@ -13,17 +13,18 @@ from pymongo import MongoClient
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "mypassword")
 MYSQL_DB = os.getenv("MYSQL_DB", "mpcs53001_final_project")
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "mypassword")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB = os.getenv("MONGO_DB", "mpcs53001_final_project")
 # to account for variant docs stored per SKU in "product_specs"
 MONGO_VARIANT_COLL = os.getenv("MONGO_VARIANT_COLL", "product_specs")
+NEO4J_BATCH_SIZE = int(os.getenv("NEO4J_BATCH_SIZE", "5000"))
 
 def mysql_conn():
     return pymysql.connect(
@@ -44,6 +45,20 @@ def neo_driver():
 
 def mongo_db():
     return MongoClient(MONGO_URI)[MONGO_DB]
+
+
+def _run_in_batches(driver, cypher: str, rows: list[dict[str, Any]], batch_size: int = NEO4J_BATCH_SIZE):
+    if not rows:
+        return
+    with driver.session() as s:
+        for i in range(0, len(rows), batch_size):
+            chunk = rows[i : i + batch_size]
+            s.run(cypher, rows=chunk).consume()
+
+
+def wipe_graph(driver):
+    with driver.session() as s:
+        s.run("MATCH (n) DETACH DELETE n").consume()
 
 # neo4j schema (constraints)
 def create_constraints(driver):
@@ -76,8 +91,7 @@ def load_customers(driver):
         c.city       = r.city,
         c.state      = r.state
     """
-    with driver.session() as s:
-        s.run(cypher, rows=rows)
+    _run_in_batches(driver, cypher, rows)
 
 
 def load_products_and_variants(driver, mongo_enrich):
@@ -138,13 +152,13 @@ def load_products_and_variants(driver, mongo_enrich):
     MERGE (v)-[:OF_PRODUCT]->(p)
     """
 
-    with driver.session() as s:
-        s.run(cypher_products, rows=products)
-        # Ensure color/size keys exist even if not enriching
-        for v in variants:
-            v.setdefault("color", None)
-            v.setdefault("size", None)
-        s.run(cypher_variants, rows=variants)
+    # Ensure color/size keys exist even if not enriching
+    for v in variants:
+        v.setdefault("color", None)
+        v.setdefault("size", None)
+
+    _run_in_batches(driver, cypher_products, products)
+    _run_in_batches(driver, cypher_variants, variants)
 
 # load relationship events
 def load_event_edges(driver, limit):
@@ -157,26 +171,23 @@ def load_event_edges(driver, limit):
     if limit:
         sql += " LIMIT %s"
 
-    with mysql_conn().cursor() as cur:
-        cur.execute(sql, (limit,) if limit else None)
-        rows = cur.fetchall()
+    def normalize_rows(rows):
+        for r in rows:
+            mj = r.get("metadata_json")
+            if isinstance(mj, (str, bytes)):
+                try:
+                    r["metadata"] = json.loads(mj)
+                except Exception:
+                    r["metadata"] = {"raw": mj}
+            else:
+                r["metadata"] = mj or {}
 
-    # Normalize metadata_json from MySQL (may be None)
-    for r in rows:
-        mj = r.get("metadata_json")
-        if isinstance(mj, (str, bytes)):
-            try:
-                r["metadata"] = json.loads(mj)
-            except Exception:
-                r["metadata"] = {"raw": mj}
-        else:
-            r["metadata"] = mj or {}
-
-        # convert datetime to ISO (Neo4j driver accepts datetime too; keep as string for simplicity)
-        if isinstance(r.get("created_at"), datetime):
-            r["ts"] = r["created_at"].isoformat()
-        else:
-            r["ts"] = str(r.get("created_at"))
+            # convert datetime to ISO (Neo4j driver accepts datetime too; keep as string for simplicity)
+            if isinstance(r.get("created_at"), datetime):
+                r["ts"] = r["created_at"].isoformat()
+            else:
+                r["ts"] = str(r.get("created_at"))
+        return rows
 
     # VIEW: link to Product via Variant->Product (since events have sku)
     cypher_view = """
@@ -218,11 +229,19 @@ def load_event_edges(driver, limit):
     CREATE (c)-[:SEARCHED {ts: r.ts, session_id: r.session_id, device_id: r.device_id}]->(t)
     """
 
-    with driver.session() as s:
-        s.run(cypher_view, rows=rows)
-        s.run(cypher_cart_add, rows=rows)
-        s.run(cypher_cart_remove, rows=rows)
-        s.run(cypher_search, rows=rows)
+    with mysql_conn().cursor() as cur:
+        cur.execute(sql, (limit,) if limit else None)
+        while True:
+            rows = cur.fetchmany(NEO4J_BATCH_SIZE)
+            if not rows:
+                break
+            rows = normalize_rows(rows)
+
+            with driver.session() as s:
+                s.run(cypher_view, rows=rows).consume()
+                s.run(cypher_cart_add, rows=rows).consume()
+                s.run(cypher_cart_remove, rows=rows).consume()
+                s.run(cypher_search, rows=rows).consume()
 
 
 def load_purchases_and_returns(driver):
@@ -241,24 +260,6 @@ def load_purchases_and_returns(driver):
     JOIN order_items oi ON oi.order_item_id = ri.order_item_id
     """
 
-    with mysql_conn().cursor() as cur:
-        cur.execute(sql_purchases)
-        purchases = cur.fetchall()
-        cur.execute(sql_returns)
-        returns = cur.fetchall()
-
-    for p in purchases:
-        if isinstance(p.get("order_date"), datetime):
-            p["ts"] = p["order_date"].isoformat()
-        else:
-            p["ts"] = str(p.get("order_date"))
-
-    for r in returns:
-        if isinstance(r.get("ts"), datetime):
-            r["ts"] = r["ts"].isoformat()
-        else:
-            r["ts"] = str(r.get("ts"))
-
     cypher_purchases = """
     UNWIND $rows AS r
     MATCH (c:Customer {user_id: r.user_id})
@@ -273,12 +274,36 @@ def load_purchases_and_returns(driver):
     CREATE (c)-[:RETURNED {ts: r.ts, qty: r.quantity, return_id: r.return_id}]->(v)
     """
 
-    with driver.session() as s:
-        s.run(cypher_purchases, rows=purchases)
-        s.run(cypher_returns, rows=returns)
+    with mysql_conn().cursor() as cur:
+        cur.execute(sql_purchases)
+        while True:
+            purchases = cur.fetchmany(NEO4J_BATCH_SIZE)
+            if not purchases:
+                break
+            for p in purchases:
+                if isinstance(p.get("order_date"), datetime):
+                    p["ts"] = p["order_date"].isoformat()
+                else:
+                    p["ts"] = str(p.get("order_date"))
+            with driver.session() as s:
+                s.run(cypher_purchases, rows=purchases).consume()
+
+        cur.execute(sql_returns)
+        while True:
+            returns = cur.fetchmany(NEO4J_BATCH_SIZE)
+            if not returns:
+                break
+            for r in returns:
+                if isinstance(r.get("ts"), datetime):
+                    r["ts"] = r["ts"].isoformat()
+                else:
+                    r["ts"] = str(r.get("ts"))
+            with driver.session() as s:
+                s.run(cypher_returns, rows=returns).consume()
 
 def main():
     driver = neo_driver()
+    wipe_graph(driver)
     create_constraints(driver)
 
     load_customers(driver)

@@ -76,7 +76,7 @@ ORDER BY search_count DESC, search_term
 ;
 
 -- 7. Fetch carts information such as device type (e.g., laptop, tablet), the number of items in the cart, and total amount.
-SELECT DISTINCT
+SELECT 
     c.cart_id,
     d.device_type,
     COUNT(DISTINCT ci.cart_item_id) item_count,
