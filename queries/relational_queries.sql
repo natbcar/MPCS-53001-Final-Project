@@ -33,7 +33,7 @@ WHERE i.qty_available < 5 AND p.status = 'active'
 ORDER BY qty_available DESC
 ;
 
--- 5. 
+-- 5. Display the number of times each product pages has been viewed, ordered by popularity 
 SELECT
     pr.product_id,
     pr.name,
@@ -51,18 +51,28 @@ GROUP BY
 ORDER BY n_views DESC
 ;
 
--- 6. 
-SELECT
-    user_id,
-    GROUP_CONCAT(search_term)
-FROM (
+-- 6. Retrieve all recent search terms used by the user and categorize them based on frequency and time of day.
+WITH search_terms AS (
     SELECT
-        *,
-        JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.term')) AS search_term
-    FROM event_log
-    WHERE event_type = "search"
-) s
-GROUP BY user_id
+        user_id,
+        event_id,
+        JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.term')) AS search_term,
+        CASE
+            WHEN HOUR(created_at) BETWEEN 6 AND 11 THEN 'Morning'
+            WHEN HOUR(created_at) BETWEEN 12 AND 17 THEN 'Evening'
+            ELSE 'Night'
+        END AS time_of_day
+    FROM event_log e
+    WHERE event_type = 'search'
+        AND user_id = 882
+)
+SELECT
+    user_id, search_term, time_of_day,
+    COUNT(DISTINCT event_id) AS search_count
+FROM search_terms
+GROUP BY
+    user_id, search_term, time_of_day
+ORDER BY search_count DESC, search_term
 ;
 
 -- 7. Fetch carts information such as device type (e.g., laptop, tablet), the number of items in the cart, and total amount.
@@ -83,7 +93,57 @@ ORDER BY total_price DESC
 
 
 -- 8. Retrieve all orders placed by Sarah, showing order IDs, item details, payment methods, shipping options chosen, and the status of each order.
+SELECT
+    o.order_id,
+    o.order_date,
+    o.status AS order_status,
+    o.shipping_option,
+    pt.payment_type,
+    pt.status AS payment_status,
+    oi.quantity,
+    pr.name AS product_name,
+    pr.brand
+FROM orders o
+JOIN order_items oi
+    ON o.order_id = oi.order_id
+JOIN product_variant pv
+    ON oi.sku = pv.sku
+JOIN product pr
+    ON pv.product_id = pr.product_id
+LEFT JOIN payment_transactions pt
+    ON o.order_id = pt.order_id
+WHERE o.user_id = 882
+ORDER BY o.order_date DESC, o.order_id DESC, oi.order_item_id
+;
 
+
+
+-- 9. List all items returned by the user, along with the refund status, amount, and any restocking fees.
+SELECT
+    o.user_id,
+    o.order_id,
+    r.return_id,
+    r.status AS refund_status,
+    r.created_at AS return_created_at,
+    pr.name AS product_name,
+    pr.brand,
+    ri.quantity AS returned_qty,
+    ri.refund_amount,
+    ri.restocking_fee
+FROM returns r
+JOIN orders o
+    ON r.order_id = o.order_id
+JOIN return_items ri
+    ON r.return_id = ri.return_id
+JOIN order_items oi
+    ON ri.order_item_id = oi.order_item_id
+JOIN product_variant pv
+    ON oi.sku = pv.sku
+JOIN product pr
+    ON pv.product_id = pr.product_id
+WHERE o.user_id = 882
+ORDER BY r.created_at DESC
+;
 
 
 -- 10.  Retrieve the average number of days between purchases for Sarah.
