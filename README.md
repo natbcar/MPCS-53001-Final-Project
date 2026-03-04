@@ -10,7 +10,6 @@ MPCS-53001-Final-Project/
 ├── prompts/
 │   ├── data-generation-prompt.md
 │   ├── data-generation-prompt-v2.md
-│   └── relational_schema.txt       # ERD source text
 ├── queries/
 │   ├── relational_queries.sql      # SQL answers to project questions
 │   ├── mongo_queries.js            # MongoDB queries
