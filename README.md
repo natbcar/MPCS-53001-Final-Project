@@ -35,7 +35,7 @@ Required packages:
 - `neo4j`
 - `faker`
 
-## Instrictions
+## Instructions
 
 ### 1) Reset / Initialize relational DB
 ```bash
